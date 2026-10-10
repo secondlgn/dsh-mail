@@ -17,8 +17,8 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --test",
-    "test:single-process": "node --test-isolation=none --test"
+    "test": "node --test test/*.test.mjs",
+    "test:single-process": "node --test-isolation=none --test test/*.test.mjs"
   },
   "keywords": [
     "dsh",
@@ -33,7 +33,7 @@
   ],
   "license": "MIT",
   "engines": {
-    "node": ">=20.11.0"
+    "node": ">=22.0.0"
   },
   "dsh": {
     "bundle": {
