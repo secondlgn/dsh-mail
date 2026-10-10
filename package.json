@@ -12,10 +12,19 @@
   },
   "files": [
     "src",
+    "docs",
     "cordis.patch.yml",
     "README.md",
     "LICENSE"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/secondlgn/dsh-mail.git"
+  },
+  "homepage": "https://github.com/secondlgn/dsh-mail#readme",
+  "bugs": {
+    "url": "https://github.com/secondlgn/dsh-mail/issues"
+  },
   "scripts": {
     "test": "node --test test/*.test.mjs",
     "test:single-process": "node --test-isolation=none --test test/*.test.mjs"

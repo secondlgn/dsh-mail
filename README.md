@@ -155,17 +155,23 @@ node tools/mail-rehearsal.mjs you@163.com   # 抓最新几封真实邮件跑一�
 | `imap.password` / `imap.passwordEnv` | `''` / `DSH_MAIL_PASSWORD` | 密码内联或环境变量名 |
 | `imap.mailbox` | `INBOX` | 轮询的文件夹 |
 | `imap.sentMailbox` | `''` | 留空则自动识别 `\Sent`，再按常见名称兜底 |
-| `imap.pollIntervalMs` | `20000` | 轮询间隔；`IDLE` 可用时作为最长空闲时长 |
+| `imap.pollIntervalMs` | `20000` | 轮询间隔（有效下限 2000），`IDLE` 不可用时按它轮询 |
 | `imap.idle` | `true` | 首选 `IDLE`，不可用时自动退回轮询 |
+| `imap.maxIdleMs` | `240000` | 单次 `IDLE` 的最长等待上限 |
+| `imap.rejectUnauthorized` | `true` | 关掉即不校验 IMAP 服务器证书（仅用于自签调试） |
 | `smtp.host` | 同 `imap.host` | 留空即复用 IMAP 主机 |
 | `smtp.port` / `smtp.secure` | `465` / `true` | 提交端口 |
+| `smtp.password` / `smtp.passwordEnv` | `''` / `DSH_MAIL_PASSWORD` | 留空则复用 IMAP 的密码解析结果 |
 | `smtp.saveToSent` | `true` | 发信后回写 Sent 文件夹 |
+| `smtp.rejectUnauthorized` | `true` | 关掉即不校验 SMTP 服务器证书（仅用于自签调试） |
 | `allowFrom` | `[]` | 允许驱动 agent 的发件人地址（精确匹配） |
 | `selfAddresses` | `[]` | 额外视为「自己」的地址，用于自环检测 |
 | `fromName` | `DSH Agent` | 发信显示名 |
 | `tagPrefix` | `[dsh-` | 主题标签前缀 |
 | `workspaceDir` | `process.cwd()` | 新建会话的工作目录 |
+| `agentPreset` | `''` | 邮箱会话使用的 agent 预设，留空用 profile 默认 |
 | `stateDir` | `<DSH_HOME>/mail` | 插件状态目录 |
+| `dshHome` | `$DSH_HOME` | 覆盖状态目录推导所用的 DSH 主目录 |
 | `sendReceipt` | `true` | 受理后立即回执 |
 | `sendResult` | `true` | 轮次结束后回结果 |
 | `includeModePreamble` | `true` | 在提示里注入邮件排版要求 |
@@ -252,10 +258,11 @@ npm run test:single-process # 沙箱下的退路：不用按文件子进程隔�
 | `test/imap.test.mjs` | 协议解析、literal（含多次写入与多 literal）、互斥、IDLE、APPEND |
 | `test/smtp.test.mjs` | 多行应答、AUTH 三机制、DATA 点填充、MIME 组装 |
 | `test/channel.test.mjs` | 端到端：准入 → 建会话 → 回执 → 结果、打断、附件、重放、Sent 回写 |
+| `test/tls-fixture.test.mjs` | 测试用的自签证书夹具本身（本机名可用、他机名被拒） |
 
 ## 已知限制
 
-- **不在 `IDLE` 时靠轮询**：`pollIntervalMs` 同时是 IDLE 的最长等待，最短 1 秒。
+- **IDLE 单次等待有上限**：最长等 `imap.maxIdleMs`（默认 240 s）再重新进入；轮询间隔的有效下限是 2000 ms。
 - **`IDLE` 期间无法发信**：`APPEND` 需要空闲连接，若正卡在 IDLE 会等一个 IDLE 周期。当前实现里发信前会复用空闲连接，最坏情况下 Sent 回写延迟一个周期。
 - **配置 schema 无法离线校验**：DSH 用的 schemastery 是定制版，公共包解析不了它的 schema。因此 `Config` 的导入是容错的（Peer 不可解析时降级为空 schema），默认值另由 `withDefaults` 兜底，并由 `test/channel.test.mjs` 覆盖。
 - **引文剥离是启发式**：识别 `>` 引用、`On ... wrote:`、`-----Original Message-----`、Outlook/中文头部块与签名分隔符。剥离后正文为空时会退回原文并标注。
