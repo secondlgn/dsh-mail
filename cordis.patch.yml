@@ -1,0 +1,12 @@
+# The dsh-mail bundle patch: one insert over the profile root, mirroring how the shipped
+# bundles declare their rows. The user's profile `cordis.patch.yml` still owns the config —
+# it addresses this row by id (`dsh-mail`) and the last write wins.
+#
+# Configuration lives here as neutral defaults only. Real credentials, the allowlist, and the
+# workspace belong in the profile patch, so this file can be shared or committed safely.
+
+- insert:
+    - id: dsh-mail
+      name: dsh-mail
+      config:
+        enabled: false

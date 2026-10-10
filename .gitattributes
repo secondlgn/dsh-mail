@@ -1,0 +1,9 @@
+# Normalize line endings on commit; check out LF everywhere.
+* text=auto eol=lf
+
+*.js    text
+*.mjs   text
+*.json  text
+*.yml   text
+*.yaml  text
+*.md    text

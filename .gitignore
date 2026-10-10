@@ -1,0 +1,16 @@
+# Dependencies are peer-provided by DSH; this package has none of its own.
+node_modules/
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+
+# Plugin runtime state and attachment drop — never commit either.
+.dsh-mail/
+state/
+*.log
+
+# Editors and OS cruft.
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
