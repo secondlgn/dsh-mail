@@ -452,14 +452,29 @@ export function apply(ctx, rawConfig) {
         cwd: workspaceDir,
         agentPreset: config.agentPreset.length > 0 ? config.agentPreset : undefined,
       });
-      await store.bindThread(received.tag, { sessionId, subject: received.subject });
-    } else if (sessionId !== undefined) {
-      const live = ctx.sessions.get(sessionId);
-      if (live === undefined) {
-        ctx.logger?.warn('dsh-mail: session %s for thread %s no longer exists; starting a new session', sessionId, received.tag);
-        sessionId = await agentLink.createSession({ cwd: workspaceDir });
-        await store.bindThread(received.tag, { sessionId, subject: received.subject });
+      // A tag identifies a thread for its whole life. If one is already bound, keep the binding
+      // and surface the conflict instead of silently moving the conversation to a new session.
+      const binding = await store.bindThreadOnce(received.tag, { sessionId, subject: received.subject });
+      if (binding.rebound) {
+        ctx.logger?.error(
+          'dsh-mail: thread %s is already bound to session %s; refusing to move it to %s. '
+          + 'The new session is left unreferenced — inspect the thread table before trusting this thread.',
+          received.tag,
+          binding.previousSessionId,
+          binding.sessionId,
+        );
+        sessionId = binding.previousSessionId;
       }
+    }
+    // A reply is delivered to the session the thread is bound to, full stop.
+    //
+    // There is deliberately no `ctx.sessions.get()` existence check here. That lookup only sees
+    // sessions currently live in memory, so after every DSH restart it reported a perfectly
+    // durable session as "gone" and started a new one — which also re-bound the tag, splitting
+    // one thread across two sessions. Admitting a prompt to a cold session is the supported
+    // path: the controller resumes it.
+    if (sessionId === undefined) {
+      throw new Error(`dsh-mail: no session for thread ${received.tag}`);
     }
 
     await store.putMessage(received.messageId, { ...received, sessionId, stage: 'received' });

@@ -186,6 +186,24 @@ export class MailStore {
     return this.#threads.byTag[tag];
   }
 
+  /**
+   * Bind a thread tag to a session without ever moving an established binding.
+   *
+   * A tag *is* the thread's identity, so re-pointing it at another session splits one
+   * conversation across two sessions — the exact failure this returns rather than committing.
+   * Callers that legitimately rebind (a new thread taking a fresh tag) use {@link bindThread}.
+   *
+   * @returns {Promise<{ rebound: false, sessionId: string } | { rebound: true, previousSessionId: string, sessionId: string }>}
+   */
+  async bindThreadOnce(tag, { sessionId, subject, createdAt }) {
+    const previous = this.#threads.byTag[tag];
+    if (previous !== undefined && previous.sessionId !== sessionId) {
+      return { rebound: true, previousSessionId: previous.sessionId, sessionId };
+    }
+    await this.bindThread(tag, { sessionId, subject, createdAt });
+    return { rebound: false, sessionId };
+  }
+
   /** Record one of our own outgoing Message-IDs so replies to it resolve to the thread. */
   async recordOutgoing(messageId, tag) {
     this.#threads.outgoing[messageId] = tag;

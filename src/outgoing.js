@@ -32,11 +32,19 @@ export function newMessageId(from) {
   return `<dsh.${random}@${domainOf(from)}>`;
 }
 
-/** Strip an existing thread tag so a re-tagged subject never stacks tags. */
+/**
+ * Strip an existing thread tag so a re-tagged subject never stacks tags.
+ *
+ * Matches the same tolerant shapes as {@link tagFromSubject}: the bracket may be missing and the
+ * tag may be any length we issue, otherwise a client-mangled subject would accumulate tags.
+ */
 export function stripSubjectTag(subject, prefix) {
   if (typeof subject !== 'string') return '';
   const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return subject.replace(new RegExp(`\\s*${escaped}[0-9a-fA-F]{4}\\]`, 'g'), '').trim();
+  return subject
+    .replace(new RegExp(`\\s*${escaped}\\s*[0-9a-fA-F]{3,16}\\]?`, 'g'), ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
 }
 
 /** Prefix a subject with the thread tag, keeping any existing `Re:` markers. */
@@ -47,12 +55,32 @@ export function tagSubject(subject, tag, prefix = '[dsh-') {
   return `${rePrefix}${prefix}${tag}]${rest.length > 0 ? ` ${rest}` : ''}`;
 }
 
-/** Extract the thread tag from a subject, or `undefined` when absent. */
+/**
+ * Extract the thread tag from a subject, or `undefined` when absent.
+ *
+ * Deliberately tolerant, because the subject is whatever the reader's mail client produced:
+ * the `Re:`/`回复:` prefixes, folding, re-encoding, and a client that drops the closing bracket
+ * all happen in practice. The tag is only ever compared against our own thread table, so a
+ * permissive match cannot bind a message to the wrong conversation — an unmatched tag starts a
+ * new thread, which is the documented behaviour.
+ *
+ * @param {string} subject
+ * @param {string} [prefix] - configured tag prefix, `[dsh-` by default.
+ * @returns {string|undefined} the lower-cased tag.
+ */
 export function tagFromSubject(subject, prefix = '[dsh-') {
-  if (typeof subject !== 'string') return undefined;
+  if (typeof subject !== 'string' || subject.length === 0) return undefined;
   const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const match = subject.match(new RegExp(`${escaped}([0-9a-fA-F]{4})\\]`));
-  return match === null ? undefined : match[1].toLowerCase();
+  // Preferred: the configured prefix, case-insensitive, with the bracket optional. A client that
+  // upper-cases the whole subject must not cost us the thread.
+  const prefixed = subject.match(new RegExp(`${escaped}\\s*([0-9a-fA-F]{3,16})\\]?`, 'i'));
+  if (prefixed !== null) return prefixed[1].toLowerCase();
+  // Fallback for a client that dropped our prefix but kept the bracket. Kept narrow so an
+  // unrelated bracketed token in someone's subject cannot be read as a session: the value must
+  // be our exact tag width *and* contain a letter, which excludes `[12345]`, `[2024]`, `[1]`.
+  const bracketed = subject.match(/\[([0-9a-f]{4}|[0-9a-f]{6})\]/i);
+  if (bracketed === null || !/[a-f]/i.test(bracketed[1])) return undefined;
+  return bracketed[1].toLowerCase();
 }
 
 /** Encode a header value as an RFC 2047 encoded word when it is not plain ASCII. */

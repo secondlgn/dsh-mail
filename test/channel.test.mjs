@@ -613,9 +613,8 @@ test('unfinished messages from a previous run are replayed', async () => {
   await store.putMessage('<replay@example.com>', {
     messageId: '<replay@example.com>', uid: 7, tag: 'c001', sessionId: 'session-9', stage: 'running',
   });
-  // The session outlived the process, as a persisted DSH session does.
-  controller.adopt('session-9');
-
+  // Deliberately NOT adopted into the live session map: a session that survived a restart is
+  // durable but cold, and the channel must still route the replay into it.
   try {
     apply(host.context, pluginConfig({
       imap, smtp, stateDir, attachmentsDir: join(directory, 'attachments'),
@@ -623,6 +622,7 @@ test('unfinished messages from a previous run are replayed', async () => {
     // The replay re-fetches the message and dispatches it into its original session.
     const prompt = await waitFor(() => controller.prompts[0]);
     assert.equal(prompt.sessionId, 'session-9');
+    assert.equal(controller.created.length, 0, 'a cold session must be resumed, never replaced');
     assert.match(prompt.content[0].text, /会话号: c001/);
     assert.match(prompt.content[0].text, /续接/);
     assert.match(prompt.content[0].text, /please summarise the repo/);
@@ -718,6 +718,75 @@ test('the message is flagged seen but never deleted', async () => {
       assert.equal(imap.commands.some((command) => /\\Deleted/i.test(command)), false);
     },
   });
+});
+
+test('a reply to a thread whose session is cold keeps that session', async () => {
+  // The reported failure: after a DSH restart the bound session is durable but no longer live in
+  // the in-memory store, and the channel used to read that as "session gone" and fork the thread
+  // into a brand new conversation. The tag must win over any liveness probe.
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-mail-cold-'));
+  const imap = await fakeImap({ messages: [] });
+  const smtp = await fakeSmtp();
+  const controller = stubController();
+  const host = stubContext({ sessions: controller.sessions, sessionController: controller });
+
+  const stateDir = join(directory, 'state');
+  const store = await new MailStore(stateDir).load();
+  // A thread established by a previous run, with its session deliberately absent from memory.
+  await store.bindThread('a3f9', { sessionId: 'session-cold', subject: 'earlier topic' });
+  await store.recordOutgoing('<dsh.earlier@163.com>', 'a3f9');
+
+  try {
+    apply(host.context, pluginConfig({ imap, smtp, stateDir, attachmentsDir: join(directory, 'attachments') }));
+    // The reader answers by keeping the tag in the subject, with no usable reference chain.
+    imap.deliver(1, mail({
+      subject: 'Re: [dsh-a3f9] earlier topic',
+      messageId: '<cold@example.com>',
+      body: 'continuing the old thread',
+    }));
+
+    const prompt = await waitFor(() => controller.prompts[0]);
+    assert.equal(prompt.sessionId, 'session-cold', 'the reply must land in the bound session');
+    assert.equal(controller.created.length, 0, 'no new session may be created');
+
+    // And the thread table must still point at the original session.
+    const reloaded = await new MailStore(stateDir).load();
+    assert.equal(reloaded.sessionForTag('a3f9'), 'session-cold');
+  } finally {
+    await host.dispose();
+    await imap.close().catch(() => {});
+    await smtp.close().catch(() => {});
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('a tag is never re-pointed at a different session', async () => {
+  // Even if something upstream concludes "new session", the tag is the thread's identity and the
+  // binding must not move — moving it is what split one conversation across two sessions.
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-mail-rebind-'));
+  const imap = await fakeImap({ messages: [] });
+  const smtp = await fakeSmtp();
+  const controller = stubController();
+  const host = stubContext({ sessions: controller.sessions, sessionController: controller });
+
+  const stateDir = join(directory, 'state');
+  const store = await new MailStore(stateDir).load();
+
+  try {
+    // Two different sessions claiming the same tag: the first binding wins.
+    const first = await store.bindThreadOnce('b001', { sessionId: 'session-one', subject: 's' });
+    assert.equal(first.rebound, false);
+    const second = await store.bindThreadOnce('b001', { sessionId: 'session-two', subject: 's' });
+    assert.deepEqual(second, { rebound: true, previousSessionId: 'session-one', sessionId: 'session-two' });
+
+    const reloaded = await new MailStore(stateDir).load();
+    assert.equal(reloaded.sessionForTag('b001'), 'session-one', 'the established binding is kept');
+  } finally {
+    await host.dispose();
+    await imap.close().catch(() => {});
+    await smtp.close().catch(() => {});
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test('a completed message is not re-delivered on the next poll', async () => {

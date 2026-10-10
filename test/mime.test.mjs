@@ -244,6 +244,43 @@ test('subject tags round-trip and never stack', () => {
   assert.equal(stripSubjectTag('[dsh-a3f9] Hi', '[dsh-'), 'Hi');
 });
 
+test('tag extraction tolerates the shapes mail clients actually produce', () => {
+  // The tag is the whole reply-routing signal, so it has to survive client rewriting. Each case
+  // below is either seen in the wild or one client edit away from a real subject.
+  const cases = [
+    ['Re: [dsh-a3f9] topic', 'a3f9'], // the canonical form
+    ['[dsh-a3f9] topic', 'a3f9'], // the original message
+    ['RE: [DSH-A3F9] topic', 'a3f9'], // a client upper-cased the whole subject
+    ['回复: [dsh-a3f9] 主题', 'a3f9'], // localized reply prefix
+    ['Re: Re: [dsh-a3f9] topic', 'a3f9'], // stacked reply prefixes
+    ['[dsh- a3f9] topic', 'a3f9'], // a space slipped in after the prefix
+    ['Re: [dsh-a3f9]topic', 'a3f9'], // no space after the tag
+    ['Fwd: [dsh-a3f9] topic', 'a3f9'], // forwarded rather than replied
+    ['[dsh-a3f9]', 'a3f9'], // tag only
+  ];
+  for (const [subject, expected] of cases) {
+    assert.equal(tagFromSubject(subject), expected, `subject: ${subject}`);
+  }
+
+  // Brackets that are not one of our tags must never be mistaken for a session.
+  assert.equal(tagFromSubject('[PATCH] something'), undefined);
+  assert.equal(tagFromSubject('[12345] release notes'), undefined, 'length is wrong and it has no letter');
+  assert.equal(tagFromSubject('[2024] annual report'), undefined, 'digits alone are not a tag');
+  assert.equal(tagFromSubject('[b1] short'), undefined, 'too short to be one of ours');
+  assert.equal(tagFromSubject('Re: totally unrelated'), undefined);
+  // A bare bracketed tag still resolves when our prefix was lost in transit.
+  assert.equal(tagFromSubject('[a3f9] orphaned prefix'), 'a3f9');
+});
+
+test('stripping a tag leaves the rest of the subject intact', () => {
+  assert.equal(stripSubjectTag('Re: [dsh-a3f9] topic', '[dsh-'), 'Re: topic');
+  assert.equal(stripSubjectTag('Re: [dsh-a3f9]topic', '[dsh-'), 'Re: topic');
+  assert.equal(stripSubjectTag('[dsh-a3f9]', '[dsh-'), '');
+  assert.equal(stripSubjectTag('no tag', '[dsh-'), 'no tag');
+  // Re-tagging after a strip must not double the tag or drop the topic.
+  assert.equal(tagSubject('Re: [dsh-a3f9] topic', 'b001'), 'Re: [dsh-b001] topic');
+});
+
 test('non-ASCII header values are encoded, folded headers stay within width', () => {
   assert.match(encodeHeaderText('中文主题'), /^=\?UTF-8\?B\?/);
   assert.equal(encodeHeaderText('plain'), 'plain');
