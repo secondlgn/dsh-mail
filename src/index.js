@@ -47,7 +47,7 @@ async function loadConfigSchema() {
     return {};
   }
   return z.object({
-    enabled: z.boolean().default(true),
+    enabled: z.boolean().default(true).volatile(),
 
     imap: z.object({
       host: z.string().required(),
@@ -62,7 +62,7 @@ async function loadConfigSchema() {
       idle: z.boolean().default(true),
       maxIdleMs: z.number().default(240000),
       rejectUnauthorized: z.boolean().default(true),
-    }),
+    }).volatile(),
 
     smtp: z.object({
       host: z.string().default(''),
@@ -73,54 +73,54 @@ async function loadConfigSchema() {
       passwordEnv: z.string().default('DSH_MAIL_PASSWORD'),
       saveToSent: z.boolean().default(true),
       rejectUnauthorized: z.boolean().default(true),
-    }),
+    }).volatile(),
 
     /** Exact sender addresses allowed to drive the agent. Empty means nobody. */
-    allowFrom: z.array(z.string()).default([]),
+    allowFrom: z.array(z.string()).default([]).volatile(),
 
     /** Addresses that count as "us" for loop detection; the IMAP user is always included. */
-    selfAddresses: z.array(z.string()).default([]),
+    selfAddresses: z.array(z.string()).default([]).volatile(),
 
-    fromName: z.string().default('DSH Agent'),
-    tagPrefix: z.string().default('[dsh-'),
+    fromName: z.string().default('DSH Agent').volatile(),
+    tagPrefix: z.string().default('[dsh-').volatile(),
 
     /** Working directory for sessions the channel creates. */
-    workspaceDir: z.string().default(''),
+    workspaceDir: z.string().default('').volatile(),
 
     /** Optional agent preset for sessions the channel creates; empty uses the profile default. */
-    agentPreset: z.string().default(''),
+    agentPreset: z.string().default('').volatile(),
 
     /** Where plugin state lives; defaults to `<DSH_HOME>/mail`. */
     stateDir: z.string().default(''),
     dshHome: z.string().default(''),
 
     /** Acknowledge every admitted message immediately, before the turn runs. */
-    sendReceipt: z.boolean().default(true),
+    sendReceipt: z.boolean().default(true).volatile(),
 
     /** Send the assistant's answer back when a mail-initiated turn ends. */
-    sendResult: z.boolean().default(true),
+    sendResult: z.boolean().default(true).volatile(),
 
     /** Emit the email-mode framing plus the body as the prompt. */
-    includeModePreamble: z.boolean().default(true),
+    includeModePreamble: z.boolean().default(true).volatile(),
 
     /** Interrupt the running turn when a reply belongs to that same thread. */
-    interruptSameThread: z.boolean().default(true),
+    interruptSameThread: z.boolean().default(true).volatile(),
 
     /** Refuse messages larger than this. */
-    maxMessageBytes: z.number().default(32 * 1024 * 1024),
+    maxMessageBytes: z.number().default(32 * 1024 * 1024).volatile(),
 
     /** Cap on the answer text carried in one result email. */
-    maxResultChars: z.number().default(60000),
+    maxResultChars: z.number().default(60000).volatile(),
 
     attachments: z.object({
       enabled: z.boolean().default(true),
       maxBytes: z.number().default(10 * 1024 * 1024),
       maxCount: z.number().default(10),
-      dir: z.string().default(''),
-    }),
+      dir: z.string().default('').volatile(),
+    }).volatile(),
 
     /** Crash recovery: replay unfinished messages, or leave them failed. */
-    recovery: z.string().default('rerun'),
+    recovery: z.string().default('rerun').volatile(),
   });
 }
 
@@ -180,30 +180,47 @@ const DEFAULTS = {
  */
 export function withDefaults(rawConfig) {
   const config = rawConfig ?? {};
-  const merge = (base, override) => {
-    const merged = { ...base };
-    for (const [key, value] of Object.entries(override ?? {})) {
-      if (value === undefined) continue;
-      merged[key] = isPlainObject(value) && isPlainObject(base?.[key])
-        ? merge(base[key], value)
-        : value;
-    }
-    return merged;
-  };
-  const merged = merge(DEFAULTS, config);
+  const merged = mergeConfig(DEFAULTS, config);
   merged.allowFrom = config.allowFrom ?? DEFAULTS.allowFrom;
   merged.selfAddresses = config.selfAddresses ?? DEFAULTS.selfAddresses;
   return merged;
 }
 
-/** Whether a value is a mergeable plain object rather than an array or class instance. */
+/**
+ * Merge `override` over `base`, key by key.
+ *
+ * The key set is the *union* of both sides, so a field the caller omitted still receives its
+ * default — a plain `{...base, ...override}` would drop it, because a root-level volatile
+ * reference replaces its subtree rather than enumerating into it. A volatile reference is kept
+ * by identity and resolved later, never spread: its only enumerable property is `get`.
+ *
+ * @param {object} base
+ * @param {object} override
+ * @returns {object}
+ */
+function mergeConfig(base, override) {
+  const merged = { ...base };
+  for (const key of new Set([...Object.keys(base ?? {}), ...Object.keys(override ?? {})])) {
+    const value = override?.[key];
+    if (value === undefined) continue;
+    merged[key] = isPlainObject(value) && isPlainObject(base?.[key])
+      ? mergeConfig(base[key], value)
+      : value;
+  }
+  return merged;
+}
+
+/** Whether a value is a mergeable plain object rather than an array, reference, or class instance. */
 function isPlainObject(value) {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  // Volatile references must not be spread: their contents live behind `get()`.
+  return typeof value.get !== 'function';
 }
 
 /** Resolve `<DSH_HOME>` without importing a DSH-internal package. */
 function resolveHome(config) {
-  if (typeof config.dshHome === 'string' && config.dshHome.length > 0) return config.dshHome;
+  const explicit = unref(config.dshHome);
+  if (typeof explicit === 'string' && explicit.length > 0) return explicit;
   if (typeof process.env.DSH_HOME === 'string' && process.env.DSH_HOME.length > 0) return process.env.DSH_HOME;
   return join(process.env.USERPROFILE ?? process.env.HOME ?? '.', '.dsh');
 }
@@ -229,31 +246,73 @@ function bareId(messageId) {
   return String(messageId).replace(/^<|>$/g, '');
 }
 
+/* ------------------------------------------------------------------ *
+ * Volatile-aware configuration access
+ * ------------------------------------------------------------------ */
+
+/**
+ * Fields the settings UI may edit, resolved live on every read.
+ *
+ * DSH's settings service can only edit a field a schema marks `.volatile()`, and volatility
+ * cannot nest, so whole subtrees (`imap`, `smtp`, `attachments`) are marked rather than their
+ * leaves. Volatile fields arrive as references — `Volatile<T>`, read with `.get()` — instead of
+ * plain values, and the Loader commits edits into those same references without remounting the
+ * plugin. Reading through this helper therefore picks up a settings change with no restart,
+ * while a plain config object (tests, a hand-written patch) keeps working unchanged.
+ */
+let activeConfig;
+let idleFallback = false;
+
+/** Unwrap a volatile reference; pass any other value through untouched. */
+function unref(value) {
+  return value !== null && typeof value === 'object' && typeof value.get === 'function'
+    ? value.get()
+    : value;
+}
+
+/**
+ * Live configuration with every volatile reference resolved and defaults applied.
+ *
+ * The merge runs first so an omitted field still gets its default, then the references are
+ * unwrapped: `imap`, `smtp`, and `attachments` are volatile subtrees, so their references must be
+ * resolved to plain objects before anything reads `cfg().imap.host`.
+ *
+ * @returns {object} the current effective config.
+ */
+function cfg() {
+  const merged = withDefaults(activeConfig);
+  const resolved = {};
+  for (const [key, value] of Object.entries(merged)) resolved[key] = unref(value);
+  return resolved;
+}
+
 /**
  * Plugin entry point.
  *
  * @param {import('@deepseek-ai/cordis').Context} ctx
- * @param {object} config - normalized plugin config.
+ * @param {object} rawConfig - normalized plugin config, volatile fields as references.
  */
 export function apply(ctx, rawConfig) {
-  const config = withDefaults(rawConfig);
-  if (config.enabled === false) {
+  activeConfig = rawConfig ?? {};
+  idleFallback = false;
+  const config = cfg();
+  if (cfg().enabled === false) {
     ctx.logger?.info('dsh-mail: disabled by configuration');
     return;
   }
 
-  const stateDir = config.stateDir.length > 0 ? config.stateDir : join(resolveHome(config), 'mail');
-  const workspaceDir = config.workspaceDir.length > 0 ? config.workspaceDir : process.cwd();
-  const attachmentRoot = config.attachments.dir.length > 0
-    ? config.attachments.dir
+  const stateDir = cfg().stateDir.length > 0 ? cfg().stateDir : join(resolveHome(config), 'mail');
+  const workspaceDir = cfg().workspaceDir.length > 0 ? cfg().workspaceDir : process.cwd();
+  const attachmentRoot = cfg().attachments.dir.length > 0
+    ? cfg().attachments.dir
     : join(workspaceDir, '.dsh-mail', 'attachments');
 
-  const imapPassword = resolveSecret(config.imap.password, config.imap.passwordEnv);
-  const smtpPassword = resolveSecret(config.smtp.password, config.smtp.passwordEnv);
+  const imapPassword = resolveSecret(cfg().imap.password, cfg().imap.passwordEnv);
+  const smtpPassword = resolveSecret(cfg().smtp.password, cfg().smtp.passwordEnv);
   const selfAddresses = [...new Set([
-    config.imap.user,
-    config.smtp.user,
-    ...config.selfAddresses,
+    cfg().imap.user,
+    cfg().smtp.user,
+    ...cfg().selfAddresses,
   ].filter((address) => typeof address === 'string' && address.includes('@')))];
 
   const lifecycle = new AbortController();
@@ -261,17 +320,17 @@ export function apply(ctx, rawConfig) {
   const agentLink = new AgentLink({ sessionController: ctx.sessionController, logger: ctx.logger });
   const mailer = new Mailer({
     smtp: {
-      host: config.smtp.host.length > 0 ? config.smtp.host : config.imap.host,
-      port: config.smtp.port,
-      secure: config.smtp.secure,
-      user: config.smtp.user.length > 0 ? config.smtp.user : config.imap.user,
+      host: cfg().smtp.host.length > 0 ? cfg().smtp.host : cfg().imap.host,
+      port: cfg().smtp.port,
+      secure: cfg().smtp.secure,
+      user: cfg().smtp.user.length > 0 ? cfg().smtp.user : cfg().imap.user,
       password: smtpPassword,
-      saveToSent: config.smtp.saveToSent,
-      rejectUnauthorized: config.smtp.rejectUnauthorized,
+      saveToSent: cfg().smtp.saveToSent,
+      rejectUnauthorized: cfg().smtp.rejectUnauthorized,
       ehloName: 'dsh.local',
     },
-    from: config.smtp.user.length > 0 ? config.smtp.user : config.imap.user,
-    fromName: config.fromName,
+    from: cfg().smtp.user.length > 0 ? cfg().smtp.user : cfg().imap.user,
+    fromName: cfg().fromName,
     logger: ctx.logger,
     onSent: async (message) => {
       const connection = await ensureImap();
@@ -301,16 +360,16 @@ export function apply(ctx, rawConfig) {
   /** Open and prepare one IMAP connection, selecting the configured mailbox. */
   async function openImap() {
     const connection = new ImapConnection({
-      host: config.imap.host,
-      port: config.imap.port,
-      secure: config.imap.secure,
-      rejectUnauthorized: config.imap.rejectUnauthorized,
+      host: cfg().imap.host,
+      port: cfg().imap.port,
+      secure: cfg().imap.secure,
+      rejectUnauthorized: cfg().imap.rejectUnauthorized,
     });
     connection.on('error', (error) => {
       ctx.logger?.debug?.('dsh-mail: imap connection error (%s)', error?.message ?? error);
     });
     await connection.open();
-    await connection.login(config.imap.user, imapPassword);
+    await connection.login(cfg().imap.user, imapPassword);
 
     // Providers that police third-party clients (notably NetEase) refuse mailbox access until
     // the client identifies itself, so announce the identity before selecting anything.
@@ -323,7 +382,7 @@ export function apply(ctx, rawConfig) {
       ctx.logger?.debug?.('dsh-mail: ID command failed (%s)', error?.message ?? error);
     }
 
-    const info = await connection.select(config.imap.mailbox);
+    const info = await connection.select(cfg().imap.mailbox);
     lastKnownExists = info.exists;
     return { connection, info };
   }
@@ -345,7 +404,7 @@ export function apply(ctx, rawConfig) {
    */
   let sentMailboxCache;
   async function resolveSentMailbox(connection) {
-    if (config.imap.sentMailbox.length > 0) return config.imap.sentMailbox;
+    if (cfg().imap.sentMailbox.length > 0) return cfg().imap.sentMailbox;
     if (sentMailboxCache !== undefined) return sentMailboxCache;
     try {
       const names = await connection.listMailboxes();
@@ -374,7 +433,7 @@ export function apply(ctx, rawConfig) {
     references,
     receipt,
   }) {
-    const messageId = newMessageId(config.smtp.user.length > 0 ? config.smtp.user : config.imap.user);
+    const messageId = newMessageId(cfg().smtp.user.length > 0 ? cfg().smtp.user : cfg().imap.user);
     await mailer.send({
       to,
       subject,
@@ -391,8 +450,8 @@ export function apply(ctx, rawConfig) {
 
   /** Send the immediate acknowledgement that hands the sender their thread tag. */
   async function sendReceipt(received, { isNew, inReplyTo, references, subject }) {
-    if (config.sendReceipt !== true) return;
-    const displaySubject = tagSubject(subject, received.tag, config.tagPrefix);
+    if (cfg().sendReceipt !== true) return;
+    const displaySubject = tagSubject(subject, received.tag, cfg().tagPrefix);
     await sendThreaded({
       to: received.sender,
       subject: displaySubject,
@@ -410,7 +469,7 @@ export function apply(ctx, rawConfig) {
 
   /** Download attachments for one message into the workspace, respecting the configured caps. */
   async function saveAttachments(received, parsed) {
-    if (config.attachments.enabled !== true) return [];
+    if (cfg().attachments.enabled !== true) return [];
     const attachments = parsed.attachments ?? [];
     if (attachments.length === 0) return [];
 
@@ -420,11 +479,11 @@ export function apply(ctx, rawConfig) {
     let index = 0;
     for (const attachment of attachments) {
       index += 1;
-      if (saved.filter((item) => item.skipped !== true).length >= config.attachments.maxCount) {
+      if (saved.filter((item) => item.skipped !== true).length >= cfg().attachments.maxCount) {
         saved.push({ name: attachment.name, skipped: true, reason: '超过数量上限' });
         continue;
       }
-      if ((attachment.approxBytes ?? 0) > config.attachments.maxBytes) {
+      if ((attachment.approxBytes ?? 0) > cfg().attachments.maxBytes) {
         saved.push({ name: attachment.name, skipped: true, reason: '超过单附件大小上限' });
         continue;
       }
@@ -450,7 +509,7 @@ export function apply(ctx, rawConfig) {
     if (isNew) {
       sessionId = await agentLink.createSession({
         cwd: workspaceDir,
-        agentPreset: config.agentPreset.length > 0 ? config.agentPreset : undefined,
+        agentPreset: cfg().agentPreset.length > 0 ? cfg().agentPreset : undefined,
       });
       // A tag identifies a thread for its whole life. If one is already bound, keep the binding
       // and surface the conflict instead of silently moving the conversation to a new session.
@@ -481,7 +540,7 @@ export function apply(ctx, rawConfig) {
 
     // Attachments land in the workspace before the model is told about them.
     let attachmentPaths = [];
-    if (config.attachments.enabled === true) {
+    if (cfg().attachments.enabled === true) {
       try {
         const parsed = parseMessage(raw);
         attachmentPaths = await saveAttachments(received, parsed);
@@ -505,7 +564,7 @@ export function apply(ctx, rawConfig) {
         turn: round,
         bodyText: received.body,
         attachmentPaths,
-        modePreamble: config.includeModePreamble !== false,
+        modePreamble: cfg().includeModePreamble !== false,
       }),
       received,
       replyTo: received.messageId,
@@ -513,7 +572,7 @@ export function apply(ctx, rawConfig) {
       subject: received.subject,
       round,
       // Only a reply inside the same thread interrupts; a new session has nothing to interrupt.
-      mode: config.interruptSameThread !== false ? DeliveryMode.interrupt : DeliveryMode.queue,
+      mode: cfg().interruptSameThread !== false ? DeliveryMode.interrupt : DeliveryMode.queue,
     });
 
     await store.putMessage(received.messageId, {
@@ -550,10 +609,10 @@ export function apply(ctx, rawConfig) {
       lookupMessage: (messageId) => store.message(messageId),
       lookupTag: (tag) => store.sessionForTag(tag),
       lookupOutgoing: (messageId) => store.tagForOutgoing(messageId),
-      allowFrom: config.allowFrom,
+      allowFrom: cfg().allowFrom,
       selfAddresses,
-      tagPrefix: config.tagPrefix,
-      maxBytes: config.maxMessageBytes,
+      tagPrefix: cfg().tagPrefix,
+      maxBytes: cfg().maxMessageBytes,
     });
 
     switch (verdict.action) {
@@ -564,7 +623,7 @@ export function apply(ctx, rawConfig) {
         ctx.logger?.debug?.('dsh-mail: uid %s duplicates a completed message (%s)', uid, verdict.messageId);
         return;
       case Verdict.continueSession:
-        if (verdict.reason === 'unfinished-replay' && config.recovery !== 'rerun') {
+        if (verdict.reason === 'unfinished-replay' && cfg().recovery !== 'rerun') {
           await store.putMessage(verdict.messageId, { stage: 'failed', failure: 'skipped by recovery policy' });
           return;
         }
@@ -588,8 +647,8 @@ export function apply(ctx, rawConfig) {
   /** One poll cycle: reconnect as needed, fetch everything new, and advance the watermark. */
   async function pollOnce() {
     const connection = await ensureImap();
-    const info = await connection.select(config.imap.mailbox);
-    await store.advanceCursor({ uidValidity: info.uidValidity, mailbox: config.imap.mailbox });
+    const info = await connection.select(cfg().imap.mailbox);
+    await store.advanceCursor({ uidValidity: info.uidValidity, mailbox: cfg().imap.mailbox });
 
     const cursor = store.cursor;
     const criteria = cursor.lastUid > 0
@@ -619,8 +678,8 @@ export function apply(ctx, rawConfig) {
 
   /** Wait for a mailbox hint or the poll interval, whichever comes first. */
   async function waitForWork() {
-    const interval = Math.max(2000, config.imap.pollIntervalMs);
-    if (config.imap.idle !== true) {
+    const interval = Math.max(2000, cfg().imap.pollIntervalMs);
+    if (idleFallback === true || cfg().imap.idle !== true) {
       await sleep(interval, lifecycle.signal);
       return;
     }
@@ -630,10 +689,10 @@ export function apply(ctx, rawConfig) {
       return;
     }
     try {
-      await connection.idleOnce({ timeoutMs: Math.min(Math.max(interval, 1000), config.imap.maxIdleMs) });
+      await connection.idleOnce({ timeoutMs: Math.min(Math.max(interval, 1000), cfg().imap.maxIdleMs) });
     } catch (error) {
       ctx.logger?.debug?.('dsh-mail: IDLE unavailable, falling back to polling (%s)', error?.message ?? error);
-      config.imap.idle = false;
+      idleFallback = true;
       await sleep(interval, lifecycle.signal);
     }
   }
@@ -679,7 +738,7 @@ export function apply(ctx, rawConfig) {
   async function recoverUnfinished() {
     const unfinished = store.unfinished();
     if (unfinished.length === 0) return;
-    if (config.recovery !== 'rerun') {
+    if (cfg().recovery !== 'rerun') {
       for (const item of unfinished) {
         await store.putMessage(item.messageId, { stage: 'failed', failure: 'recovery policy is not rerun' }).catch(() => {});
       }
@@ -720,22 +779,22 @@ export function apply(ctx, rawConfig) {
       return;
     }
 
-    if (config.sendResult !== true) {
+    if (cfg().sendResult !== true) {
       await store.putMessage(pending.received.messageId, { stage: 'done', completedAt: Date.now() });
       return;
     }
 
     const outcome = extractTurnResult(session, { sinceSeq: pending.lastResultSeq ?? -1 });
     let text = outcome.text;
-    if (typeof config.maxResultChars === 'number' && config.maxResultChars > 0 && text.length > config.maxResultChars) {
-      text = `${text.slice(0, config.maxResultChars)}\n\n[结果过长已截断]`;
+    if (typeof cfg().maxResultChars === 'number' && cfg().maxResultChars > 0 && text.length > cfg().maxResultChars) {
+      text = `${text.slice(0, cfg().maxResultChars)}\n\n[结果过长已截断]`;
     }
     if (text.trim().length === 0) {
       text = '（本次处理没有产生文本输出。可回复本邮件继续该会话。）';
     }
 
     const tag = pending.tag;
-    const subject = tagSubject(resultSubject(pending.subject, reason), tag, config.tagPrefix);
+    const subject = tagSubject(resultSubject(pending.subject, reason), tag, cfg().tagPrefix);
     const references = [...(pending.references ?? []), pending.replyTo]
       .filter((value, position, all) => value !== undefined && all.indexOf(value) === position);
 
@@ -791,12 +850,12 @@ export function apply(ctx, rawConfig) {
     .then(() => {
       ctx.logger?.info(
         'dsh-mail: watching %s as %s (allowlist: %s)',
-        config.imap.host,
-        config.imap.user,
-        config.allowFrom.length > 0 ? config.allowFrom.join(', ') : '(empty — nobody may drive the agent)',
+        cfg().imap.host,
+        cfg().imap.user,
+        cfg().allowFrom.length > 0 ? cfg().allowFrom.join(', ') : '(empty — nobody may drive the agent)',
       );
       if (imapPassword.length === 0) {
-        ctx.logger?.warn('dsh-mail: no IMAP password found (config.imap.password or $%s)', config.imap.passwordEnv);
+        ctx.logger?.warn('dsh-mail: no IMAP password found (cfg().imap.password or $%s)', cfg().imap.passwordEnv);
       }
       return loop();
     })
