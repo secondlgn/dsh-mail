@@ -9,12 +9,18 @@ on:
 permissions:
   contents: read
 
+# actions/checkout and actions/setup-node still ship a Node 20 entrypoint; run them on the
+# runner's Node 24 instead of taking the deprecation warning on every build.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
+        # The suite needs Node 22+ (zstd in node:zlib, native ESM test runner behaviour).
         node-version: ['22.x', '24.x']
     steps:
       - uses: actions/checkout@v4

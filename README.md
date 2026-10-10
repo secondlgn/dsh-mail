@@ -35,16 +35,24 @@ cordis.patch.yml        插件自带的 bundle 补丁（只含中性默认值）
 
 ## 安装
 
-插件是标准的 DSH Host 插件包（ESM，导出 `name` / `inject` / `Config` / `apply`）。
+插件是标准的 DSH Host 插件包（ESM，导出 `name` / `inject` / `Config` / `apply`），同时是一个
+**bundle**：它自带的 `cordis.patch.yml` 负责往 profile 里插入插件行。
+
+### 从 GitHub 安装
+
+```sh
+git clone https://github.com/secondlgn/dsh-mail
+```
+
+然后在你的 profile 目录（`$DSH_HOME/profiles/<name>/`）里做两处改动：
 
 ```jsonc
 // <profile>/package.json
 {
   "dependencies": {
-    // 从 GitHub 装（推荐）；也可以锁到某个 tag：
-    // "dsh-mail": "github:<owner>/dsh-mail#v0.1.0"
-    "dsh-mail": "github:<owner>/dsh-mail"
-    // 或指向本地克隆："dsh-mail": "file:C:/path/to/dsh-mail"
+    // 二选一：指向本地克隆，或用 GitHub 源
+    "dsh-mail": "file:C:/path/to/dsh-mail",
+    // "dsh-mail": "github:secondlgn/dsh-mail"
   },
   "dsh": {
     "profile": {
@@ -54,14 +62,14 @@ cordis.patch.yml        插件自带的 bundle 补丁（只含中性默认值）
 }
 ```
 
-`bundles` 里必须加上 `dsh-mail`，插件自带的 `cordis.patch.yml` 才会被插入；它是中性默认值
-（`enabled: false`），真正的账号与白名单写在下面的 profile 补丁里。
-
 ```yaml
 # <profile>/cordis.patch.yml
+# 注意：这里【不能】写 name: 字段。带 name 的条目是「插入新行」的写法，而新行必须由
+# bundle 提供；在 profile 补丁里带 name 会被当作未匹配条目静默忽略，插件永远不会加载。
+# 这里只能按 id 覆盖配置。
 - id: dsh-mail
-  name: dsh-mail
   config:
+    enabled: true
     imap:
       host: imap.example.com
       port: 993
@@ -76,9 +84,26 @@ cordis.patch.yml        插件自带的 bundle 补丁（只含中性默认值）
     workspaceDir: C:/work
 ```
 
-密码**不要写进配置**：用 `passwordEnv`（默认 `DSH_MAIL_PASSWORD`）指向环境变量，或直接填 `password` 走配置（不推荐）。
+`bundles` 里必须加上 `dsh-mail`，它自带的 `cordis.patch.yml` 才会被插入；那里面只有中性默认值
+（`enabled: false`），真正的账号与白名单写在上面的 profile 补丁里。补丁会**整体替换**该行的
+`config`，所以上面这份配置要写全，不能只写增量。
+
+密码**不要写进配置**：用 `passwordEnv`（默认 `DSH_MAIL_PASSWORD`）指向环境变量。
 
 `allowFrom` 为空时**任何人都无法驱动这台机器**——这是安全的默认值，不是 bug。
+
+### 关于 workspaceDir
+
+`workspaceDir` 决定邮箱会话的工作目录，**每台机器不同，不要照抄**。留空则用当前工作目录。
+它必须是该机器上真实存在的绝对路径。
+
+### 验证安装
+
+重启 DSH 后，插件行应以 `include:dsh-mail` 出现且状态为 `active`。若没出现，按顺序检查：
+
+1. `bundles` 里是否真的加了 `dsh-mail`；
+2. profile 补丁里是否误写了 `name:`（见上面的警告）；
+3. `package.json` 是否为合法 JSON。
 
 ### 网易邮箱（163/126/yeah）必读
 
@@ -90,11 +115,10 @@ cordis.patch.yml        插件自带的 bundle 补丁（只含中性默认值）
   `\Sent` 属性识别它，不依赖名字，所以不需要手工配置 `sentMailbox`。
 - 首次接入建议先在邮箱设置里开启 **IMAP/SMTP 服务**，并使用**授权码**而不是登录密码。
 
-参考配置：
+参考配置（同样是**不带 `name:`** 的 id 覆盖）：
 
 ```yaml
 - id: dsh-mail
-  name: dsh-mail
   config:
     enabled: true
     imap:
