@@ -47,7 +47,7 @@ async function loadConfigSchema() {
     return {};
   }
   return z.object({
-    enabled: z.boolean().default(true).volatile(),
+    enabled: z.boolean().default(true),
 
     imap: z.object({
       host: z.string().required(),
@@ -62,7 +62,7 @@ async function loadConfigSchema() {
       idle: z.boolean().default(true),
       maxIdleMs: z.number().default(240000),
       rejectUnauthorized: z.boolean().default(true),
-    }).volatile(),
+    }),
 
     smtp: z.object({
       host: z.string().default(''),
@@ -73,54 +73,54 @@ async function loadConfigSchema() {
       passwordEnv: z.string().default('DSH_MAIL_PASSWORD'),
       saveToSent: z.boolean().default(true),
       rejectUnauthorized: z.boolean().default(true),
-    }).volatile(),
+    }),
 
     /** Exact sender addresses allowed to drive the agent. Empty means nobody. */
-    allowFrom: z.array(z.string()).default([]).volatile(),
+    allowFrom: z.array(z.string()).default([]),
 
     /** Addresses that count as "us" for loop detection; the IMAP user is always included. */
-    selfAddresses: z.array(z.string()).default([]).volatile(),
+    selfAddresses: z.array(z.string()).default([]),
 
-    fromName: z.string().default('DSH Agent').volatile(),
-    tagPrefix: z.string().default('[dsh-').volatile(),
+    fromName: z.string().default('DSH Agent'),
+    tagPrefix: z.string().default('[dsh-'),
 
     /** Working directory for sessions the channel creates. */
-    workspaceDir: z.string().default('').volatile(),
+    workspaceDir: z.string().default(''),
 
     /** Optional agent preset for sessions the channel creates; empty uses the profile default. */
-    agentPreset: z.string().default('').volatile(),
+    agentPreset: z.string().default(''),
 
     /** Where plugin state lives; defaults to `<DSH_HOME>/mail`. */
     stateDir: z.string().default(''),
     dshHome: z.string().default(''),
 
     /** Acknowledge every admitted message immediately, before the turn runs. */
-    sendReceipt: z.boolean().default(true).volatile(),
+    sendReceipt: z.boolean().default(true),
 
     /** Send the assistant's answer back when a mail-initiated turn ends. */
-    sendResult: z.boolean().default(true).volatile(),
+    sendResult: z.boolean().default(true),
 
     /** Emit the email-mode framing plus the body as the prompt. */
-    includeModePreamble: z.boolean().default(true).volatile(),
+    includeModePreamble: z.boolean().default(true),
 
     /** Interrupt the running turn when a reply belongs to that same thread. */
-    interruptSameThread: z.boolean().default(true).volatile(),
+    interruptSameThread: z.boolean().default(true),
 
     /** Refuse messages larger than this. */
-    maxMessageBytes: z.number().default(32 * 1024 * 1024).volatile(),
+    maxMessageBytes: z.number().default(32 * 1024 * 1024),
 
     /** Cap on the answer text carried in one result email. */
-    maxResultChars: z.number().default(60000).volatile(),
+    maxResultChars: z.number().default(60000),
 
     attachments: z.object({
       enabled: z.boolean().default(true),
       maxBytes: z.number().default(10 * 1024 * 1024),
       maxCount: z.number().default(10),
-      dir: z.string().default('').volatile(),
-    }).volatile(),
+      dir: z.string().default(''),
+    }),
 
     /** Crash recovery: replay unfinished messages, or leave them failed. */
-    recovery: z.string().default('rerun').volatile(),
+    recovery: z.string().default('rerun'),
   });
 }
 
@@ -190,9 +190,13 @@ export function withDefaults(rawConfig) {
  * Merge `override` over `base`, key by key.
  *
  * The key set is the *union* of both sides, so a field the caller omitted still receives its
- * default — a plain `{...base, ...override}` would drop it, because a root-level volatile
- * reference replaces its subtree rather than enumerating into it. A volatile reference is kept
- * by identity and resolved later, never spread: its only enumerable property is `get`.
+ * default. Iterating only the override's keys — the shape a plain `{...base, ...override}` has —
+ * would drop a defaulted section whenever the caller supplied nothing for it.
+ *
+ * Nested sections merge key by key rather than wholesale, so a patch that sets one field inside
+ * `imap` (say only `sentMailbox`) cannot silently discard the host and mailbox beside it. A value
+ * that carries a `get` function is treated as opaque and kept by identity rather than spread:
+ * spreading such a reference yields `{ get }` and loses the configuration it carries.
  *
  * @param {object} base
  * @param {object} override
@@ -213,7 +217,7 @@ function mergeConfig(base, override) {
 /** Whether a value is a mergeable plain object rather than an array, reference, or class instance. */
 function isPlainObject(value) {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
-  // Volatile references must not be spread: their contents live behind `get()`.
+  // A config reference carries its contents behind `get()`; spreading one would keep only `get`.
   return typeof value.get !== 'function';
 }
 
@@ -247,23 +251,27 @@ function bareId(messageId) {
 }
 
 /* ------------------------------------------------------------------ *
- * Volatile-aware configuration access
+ * Live configuration access
  * ------------------------------------------------------------------ */
 
 /**
- * Fields the settings UI may edit, resolved live on every read.
+ * Configuration is re-resolved on every read rather than captured once at mount.
  *
- * DSH's settings service can only edit a field a schema marks `.volatile()`, and volatility
- * cannot nest, so whole subtrees (`imap`, `smtp`, `attachments`) are marked rather than their
- * leaves. Volatile fields arrive as references — `Volatile<T>`, read with `.get()` — instead of
- * plain values, and the Loader commits edits into those same references without remounting the
- * plugin. Reading through this helper therefore picks up a settings change with no restart,
- * while a plain config object (tests, a hand-written patch) keeps working unchanged.
+ * This was introduced for DSH's settings form, which can only edit schema fields marked
+ * `.volatile()`. That approach is dead: the runtime resolves schemastery 3.18.1, where
+ * `Schema.prototype.volatile` does not exist, so declaring it throws while the plugin's Config is
+ * built and the row never activates. The indirection is kept because it costs nothing, makes the
+ * config testable, and keeps the door open if DSH ships a runtime whose schema supports it.
  */
 let activeConfig;
 let idleFallback = false;
 
-/** Unwrap a volatile reference; pass any other value through untouched. */
+/**
+ * Unwrap a config reference, passing any other value through untouched.
+ *
+ * Nothing in this plugin produces references today; this exists so a reference-shaped value can
+ * never be spread into `{ get }` and silently lose the configuration it carries.
+ */
 function unref(value) {
   return value !== null && typeof value === 'object' && typeof value.get === 'function'
     ? value.get()
@@ -271,11 +279,7 @@ function unref(value) {
 }
 
 /**
- * Live configuration with every volatile reference resolved and defaults applied.
- *
- * The merge runs first so an omitted field still gets its default, then the references are
- * unwrapped: `imap`, `smtp`, and `attachments` are volatile subtrees, so their references must be
- * resolved to plain objects before anything reads `cfg().imap.host`.
+ * Live configuration with defaults applied.
  *
  * @returns {object} the current effective config.
  */
@@ -290,7 +294,7 @@ function cfg() {
  * Plugin entry point.
  *
  * @param {import('@deepseek-ai/cordis').Context} ctx
- * @param {object} rawConfig - normalized plugin config, volatile fields as references.
+ * @param {object} rawConfig - the plugin config the Loader parsed; read through {@link cfg}.
  */
 export function apply(ctx, rawConfig) {
   activeConfig = rawConfig ?? {};

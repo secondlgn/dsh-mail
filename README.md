@@ -97,29 +97,31 @@ git clone https://github.com/secondlgn/dsh-mail
 `workspaceDir` 决定邮箱会话的工作目录，**每台机器不同，不要照抄**。留空则用当前工作目录。
 它必须是该机器上真实存在的绝对路径。
 
-### 在界面上配置（不用改文件）
+### 界面配置：暂时不可用
 
-插件带一个浏览器半侧，在 DSH 的 **侧栏 → 插件** 页里注册一张可编辑的设置卡片
-（`plugins.item` 插槽，标题「邮件通道」）。在那张卡片里可以直接改：
+浏览器半侧（`lib/client.js`）仍在仓库里，它会在侧栏的插件页注册一张「邮件通道」卡片，但**目前不要指望它能用**。
 
-- **邮箱**：IMAP 服务器/端口/账号/收件夹、密码环境变量名、SMTP 服务器/端口、结果是否存入「已发送」
-- **准入**：白名单发件人、视为本机的额外地址
-- **行为**：工作目录、同线程打断、收到即回执、轮次结束回信、整体启用开关
+原因是一个被证伪的前提：DSH 的设置服务只能编辑 schema 上用 `.volatile()` 声明的字段，而
+**运行时解析到的 schemastery 是 3.18.1，其中 `Schema.prototype.volatile` 根本不存在**：
 
-改动写入当前 profile 的 `cordis.patch.yml`，并通过 volatile 引用**即时生效——改完不需要重启**。
+```
+$ node -e "…require('@deepseek-ai/schemastery')…console.log(typeof z.boolean().volatile)"
+undefined
+```
 
-实现要点：这些字段在 schema 上用 `.volatile()` 声明。DSH 的设置服务只能编辑 volatile 字段，
-且 **volatility 不能嵌套**，所以标的是整棵子树（`imap`、`smtp`、`attachments`）而不是叶子字段；
-volatile 字段在运行时是引用（`Volatile<T>`，需 `.get()` 读取），插件因此改为每次读取都解引用，
-才能拿到改动后的值。
+（`app.asar` 内附的源码副本是 3.18.4、有 `.volatile()`，这正是我当初误判的来源——我读了随包源码，
+却没有验证运行时实际解析到的版本。）
 
-`stateDir` 与 `dshHome` 仍是普通字段、只能改文件：它们决定状态库的位置，运行时改动会让通道与
+在 schema 上声明 `.volatile()` 会在构造 Config 时抛 `TypeError`，插件行**整个起不来**，表现为
+「插件开着但邮件完全不被处理」。因此这些声明已全部回退，配置恢复为普通字段。
+
+没有 volatile，设置服务就不会为该条目投影出任何表单字段，页面拿不到可编辑状态。要让界面配置复活，
+需要先解决版本问题（升级运行时的 schemastery，或让 DSH 的设置服务支持非 volatile 字段）。
+
+**在此之前，请直接改 `cordis.patch.yml`**（见上面的配置示例）；改完重启 DSH 生效。
+
+`stateDir` 与 `dshHome` 即使将来能编辑也应留在文件里：它们决定状态库的位置，运行时改动会让通道与
 自己的历史脱钩。
-
-**密码目前是「环境变量名」输入框，不是直接填密码的密钥框。** 界面上填的是 `passwordEnv`
-（默认 `DSH_MAIL_PASSWORD`），真实密码仍放在环境变量里。原因是密码写进配置文件就是明文落盘；
-DSH 提供了 `SettingsSecretField` 与凭据库（`ctx.credentials`）可以做到"只写不回显、可查存在性"，
-但需要宿主半侧提供一条写入通道，属于下一步。在那之前，配置文件里不会出现明文密码。
 
 ### 验证安装
 
