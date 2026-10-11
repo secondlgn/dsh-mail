@@ -56,10 +56,6 @@
       "platform": "web",
       "inject": [
         "@deepseek-ai/dsh-client-ui-settings"
-      ],
-      "external": [
-        "react/jsx-runtime",
-        "@deepseek-ai/dsh-client-ui-primitives"
       ]
     }
   },
